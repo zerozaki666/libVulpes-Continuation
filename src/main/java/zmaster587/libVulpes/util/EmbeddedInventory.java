@@ -110,6 +110,8 @@ public class EmbeddedInventory implements ISidedInventory {
 
 		@Override
 		public boolean isItemValidForSlot(int slot, ItemStack item) {
+			if(slot < 0 || slot >= inv.length)
+				return false;
 			return inv[slot] == null || (inv[slot].isItemEqual(item) && inv[slot].getMaxStackSize() != inv[slot].stackSize);
 		}
 

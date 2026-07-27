@@ -35,7 +35,7 @@ public class ClientProxy extends CommonProxy {
 	@Override
 	public void spawnParticle(String particle, World world, double x, double y, double z, double motionX, double motionY, double motionZ) {
 
-		if(particle == "errorBox") {
+		if("errorBox".equals(particle)) {
 			FxErrorBlock fx = new FxErrorBlock(world, x, y, z);
 			Minecraft.getMinecraft().effectRenderer.addEffect(fx);
 		}

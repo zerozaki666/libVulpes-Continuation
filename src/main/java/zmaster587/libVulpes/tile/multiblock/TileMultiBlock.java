@@ -43,6 +43,7 @@ public class TileMultiBlock extends TileEntity {
 	protected boolean completeStructure, canRender;
 	protected byte timeAlive = 0;
 
+	public boolean isVisibleInProjector = true;
 	protected LinkedList<IInventory> itemInPorts = new LinkedList<IInventory>();
 	protected LinkedList<IInventory> itemOutPorts = new LinkedList<IInventory>();
 
@@ -74,6 +75,10 @@ public class TileMultiBlock extends TileEntity {
 	 */
 	public boolean isComplete() {
 		return completeStructure;
+	}
+
+	public boolean isVisibleInProjector() {
+		return isVisibleInProjector;
 	}
 
 	/**
@@ -228,9 +233,18 @@ public class TileMultiBlock extends TileEntity {
 		completeStructure = complete;
 	}
 
+	/**
+	 * @deprecated Override {@link #getAllowableWildCardBlocks(Character)} when
+	 * different wildcard characters need different block sets.
+	 */
+	@Deprecated
 	public List<BlockMeta> getAllowableWildCardBlocks() {
 		List<BlockMeta> list =new ArrayList<BlockMeta>();
 		return list;
+	}
+
+	public List<BlockMeta> getAllowableWildCardBlocks(Character wildCard) {
+		return getAllowableWildCardBlocks();
 	}
 
 	/**
@@ -384,11 +398,11 @@ public class TileMultiBlock extends TileEntity {
 
 
 	public List<BlockMeta> getAllowableBlocks(Object input) {
-		if(input instanceof Character && (Character)input == '*') {
-			return getAllowableWildCardBlocks();
-		}
-		else if(input instanceof Character  && charMapping.containsKey((Character)input)) {
+		if(input instanceof Character  && charMapping.containsKey((Character)input)) {
 			return charMapping.get((Character)input);
+		}
+		else if(input instanceof Character) {
+			return getAllowableWildCardBlocks((Character)input);
 		}
 		else if(input instanceof String) { //OreDict entry
 			List<ItemStack> stacks = OreDictionary.getOres((String)input);

@@ -51,9 +51,10 @@ public class PacketEntity extends BasePacket {
 		out.writeInt(((Entity)entity).getEntityId());
 		out.writeByte(packetId);
 
-		out.writeBoolean(!nbt.hasNoTags());
+		boolean isValid = nbt != null && !nbt.hasNoTags();
+		out.writeBoolean(isValid);
 
-		if(!nbt.hasNoTags()) {
+		if(isValid) {
 			try {
 				out.writeNBTTagCompoundToBuffer(nbt);
 			} catch (IOException e) {

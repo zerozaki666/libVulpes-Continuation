@@ -1,44 +1,21 @@
-buildscript {
-    repositories {
-        mavenCentral()
-        maven {
-            name = "sonatype"
-            url = "https://oss.sonatype.org/content/repositories/snapshots/"
-        }
-    }
-    dependencies {
-        classpath 'org.ajoberstar:gradle-git:1.3.2'
-        classpath 'org.ajoberstar:grgit:1.4.1'
-    }
-}
-
-def currentJvm = org.gradle.internal.jvm.Jvm.current()
+def currentJvm = System.getProperty("java.version")
 println "Current Java version = " + currentJvm
- 
-import org.ajoberstar.grgit.*
-
-def gitHash = 'unknown'
-if (new File(projectDir, '.git').exists()) {
-    def repo = Grgit.open(project.file('.'))
-    gitHash = repo.log().find().abbreviatedId
-}
-
 
 ext.sharedManifest = manifest {
     attributes("Built-By": System.getProperty('user.name'),
                "Created-By": currentJvm,
                "Implementation-Title": archivesBaseName,
-               "Implementation-Version": project.version,
-               "Git-Hash": gitHash)
+               "Implementation-Version": project.version
+    )
 }
 
 task deobfJar(type: Jar) {
      from sourceSets.main.output
      //if project name is BBM-Dev it makes the deobf jar deobf-dev if not its just deobf
-     if (project.hasProperty("bambooshortPlanName") && project.getProperty("bambooshortPlanName") == "BBM-Dev") classifier = "deobf-dev"
-     else classifier = "deobf"
+     if (project.hasProperty("bambooshortPlanName") && project.getProperty("bambooshortPlanName") == "BBM-Dev") archiveClassifier.set("deobf-dev")
+     else archiveClassifier.set("deobf")
      //sets where the jars go to.
-     destinationDir = file 'output'
+     destinationDirectory.set(file('output'))
      manifest = project.manifest {
         from sharedManifest
     }
@@ -47,10 +24,10 @@ task deobfJar(type: Jar) {
 
 jar {
      //if project has the property BBM-Dev then it appends dev to indicate the dev branch
-     if (project.hasProperty("bambooshortPlanName") && project.getProperty("bambooshortPlanName") == "BBM-Dev") classifier = "dev-universal"
-     else classifier = "universal"
+     if (project.hasProperty("bambooshortPlanName") && project.getProperty("bambooshortPlanName") == "BBM-Dev") archiveClassifier.set("dev-universal")
+     else archiveClassifier.set("universal")
      //sets where the jars go to.
-     destinationDir = file 'output'
+     destinationDirectory.set(file('output'))
      manifest = project.manifest {
         from sharedManifest
      
