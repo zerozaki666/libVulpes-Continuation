@@ -6,12 +6,11 @@ import ic2.api.item.IC2Items;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -30,6 +29,7 @@ import net.minecraftforge.oredict.OreDictionary;
 import net.minecraftforge.oredict.ShapedOreRecipe;
 import net.minecraftforge.oredict.ShapelessOreRecipe;
 import zmaster587.libVulpes.common.CommonProxy;
+import zmaster587.libVulpes.api.IDummyMultiBlockRegisterer;
 import zmaster587.libVulpes.api.LibVulpesBlocks;
 import zmaster587.libVulpes.api.LibVulpesItems;
 import zmaster587.libVulpes.api.material.AllowedProducts;
@@ -63,6 +63,7 @@ import zmaster587.libVulpes.tile.energy.TilePlugCreativeInputRF;
 import zmaster587.libVulpes.tile.energy.TilePlugInputIC2;
 import zmaster587.libVulpes.tile.energy.TilePlugInputRF;
 import zmaster587.libVulpes.tile.energy.TilePlugOutputRF;
+import zmaster587.libVulpes.tile.multiblock.DummyTileMultiBlock;
 import zmaster587.libVulpes.tile.multiblock.TileMultiBlock;
 import zmaster587.libVulpes.tile.multiblock.TilePlaceholder;
 import zmaster587.libVulpes.tile.multiblock.hatch.TileFluidHatch;
@@ -76,6 +77,7 @@ import cpw.mods.fml.common.SidedProxy;
 import cpw.mods.fml.common.Mod.EventHandler;
 import cpw.mods.fml.common.Mod.Instance;
 import cpw.mods.fml.common.event.FMLInitializationEvent;
+import cpw.mods.fml.common.event.FMLLoadCompleteEvent;
 import cpw.mods.fml.common.event.FMLMissingMappingsEvent;
 import cpw.mods.fml.common.event.FMLPostInitializationEvent;
 import cpw.mods.fml.common.event.FMLPreInitializationEvent;
@@ -85,11 +87,13 @@ import cpw.mods.fml.common.gameevent.TickEvent;
 import cpw.mods.fml.common.network.NetworkRegistry;
 import cpw.mods.fml.common.registry.GameRegistry;
 
-@Mod(modid="libVulpes",name="Vulpes library",version="@MAJOR@.@MINOR@.@REVIS@.@BUILD@",useMetadata=true, dependencies="before:gregtech;after:CoFHCore;after:BuildCraft|Core")
+@Mod(modid="libVulpes",name="Vulpes library",version="@MAJOR@.@MINOR@.@REVIS@@BUILD@",useMetadata=true, dependencies="before:gregtech;after:CoFHCore;after:BuildCraft|Core")
 public class LibVulpes {
 	public static Logger logger = Logger.getLogger("libVulpes");
 	public static int time = 0;
 	private static HashMap<Class, String> userModifiableRecipes = new HashMap<Class, String>();
+	private static final List<IDummyMultiBlockRegisterer> dummyMultiBlockRegisterers = new ArrayList<IDummyMultiBlockRegisterer>();
+	private static boolean projectorRegistrationOpen;
 
 	@Instance(value = "libVulpes")
 	public static LibVulpes instance;
@@ -257,6 +261,12 @@ public class LibVulpes {
 		materialRegistry.registerMaterial(new zmaster587.libVulpes.api.material.Material("Iridium", "pickaxe", 2, 0xdedcce, AllowedProducts.getProductByName("COIL").getFlagValue() | AllowedProducts.getProductByName("BLOCK").getFlagValue() | AllowedProducts.getProductByName("DUST").getFlagValue() | AllowedProducts.getProductByName("INGOT").getFlagValue() | AllowedProducts.getProductByName("NUGGET").getFlagValue() | AllowedProducts.getProductByName("PLATE").getFlagValue() | AllowedProducts.getProductByName("STICK").getFlagValue()));
 
 		materialRegistry.registerOres(tabLibVulpesOres, "libVulpes");
+
+		ItemStack dilithiumCrystal = MaterialRegistry.getItemStackFromMaterialAndType("Dilithium", AllowedProducts.getProductByName("CRYSTAL"));
+		if(dilithiumCrystal != null)
+			OreDictionary.registerOre("gemDilithium", dilithiumCrystal);
+		else
+			logger.warning("Unable to register gemDilithium: the LibVulpes Dilithium crystal is unavailable");
 	}
 
 	@EventHandler
@@ -338,54 +348,50 @@ public class LibVulpes {
 		TileMultiBlock.addMapping('l', list);
 	}
 
+	@EventHandler
+	public void loadComplete(FMLLoadCompleteEvent event) {
+		projectorRegistrationOpen = true;
+		registerPendingDummyMultiblocks();
+	}
+
 	//User Recipes
 	public void loadXMLRecipe(Class clazz) {
-		File file = new File(userModifiableRecipes.get(clazz));
-		if(!file.exists()) {
-			try {
-			file.createNewFile();
-			BufferedReader inputStream = new BufferedReader(new InputStreamReader(getClass().getResourceAsStream("/assets/libvulpes/defaultrecipe.xml")));
-			
+		String recipePath = userModifiableRecipes.get(clazz);
+		if(recipePath == null) {
+			logger.warning("No XML recipe file is registered for " + clazz);
+			return;
+		}
 
-				if(inputStream != null) {
-					BufferedWriter stream2 = new BufferedWriter(new FileWriter(file));
-					
-					
-					while(inputStream.ready()) {
-						stream2.write(inputStream.readLine() + "\n");
-					}
-					
-					
-					//Write recipes
-					
-					stream2.write("<Recipes useDefault=\"true\">\n");
-					for(IRecipe recipe : RecipesMachine.getInstance().getRecipes(clazz)) {
-						boolean writeable = true;
-						for (ItemStack stack : recipe.getOutput()) {
-							if(stack.hasTagCompound()) {
-								writeable = false;
-								break;
-							}
-						}
-						
-						if(writeable)
-							stream2.write(XMLRecipeLoader.writeRecipe(recipe) + "\n");
-					}
-					stream2.write("</Recipes>");
-					stream2.close();
-					
-					inputStream.close();
+		File file = new File(recipePath);
+		if(!file.exists()) {
+			InputStream template = getClass().getResourceAsStream("/assets/libvulpes/defaultrecipe.xml");
+			if(template == null) {
+				logger.warning("Unable to find the default XML recipe template");
+				return;
+			}
+			try(BufferedReader inputStream = new BufferedReader(new InputStreamReader(template));
+					BufferedWriter outputStream = new BufferedWriter(new FileWriter(file))) {
+				String line;
+				while((line = inputStream.readLine()) != null)
+					outputStream.write(line + "\n");
+
+				outputStream.write("<Recipes useDefault=\"true\">\n");
+				List<IRecipe> recipes = RecipesMachine.getInstance().getRecipes(clazz);
+				if(recipes != null) {
+					for(IRecipe recipe : recipes)
+						outputStream.write(XMLRecipeLoader.writeRecipe(recipe) + "\n");
 				}
+				outputStream.write("</Recipes>");
 			} catch (IOException e) {
-				e.printStackTrace();
+				logger.warning("Unable to create XML recipe file " + file + ": " + e.getMessage());
 			}
 		} else {
 			XMLRecipeLoader loader = new XMLRecipeLoader();
 			try {
-				loader.loadFile(file);
-				loader.registerRecipes(clazz);
+				if(loader.loadFile(file))
+					loader.registerRecipes(clazz);
 			} catch (IOException e) {
-				e.printStackTrace();
+				logger.warning("Unable to load XML recipe file " + file + ": " + e.getMessage());
 			}
 		}
 
@@ -585,6 +591,39 @@ public class LibVulpes {
 		}
 	}
 
+	public static synchronized void addDummyMultiBlockRegisterer(IDummyMultiBlockRegisterer registerer) {
+		if(registerer == null)
+			return;
+
+		if(projectorRegistrationOpen)
+			registerDummyMultiblocks(registerer);
+		else if(!dummyMultiBlockRegisterers.contains(registerer))
+			dummyMultiBlockRegisterers.add(registerer);
+	}
+
+	public static synchronized void registerPendingDummyMultiblocks() {
+		if(!projectorRegistrationOpen || !(LibVulpesItems.itemHoloProjector instanceof ItemProjector))
+			return;
+		for(IDummyMultiBlockRegisterer registerer : dummyMultiBlockRegisterers)
+			registerDummyMultiblocks(registerer);
+		dummyMultiBlockRegisterers.clear();
+	}
+
+	private static void registerDummyMultiblocks(IDummyMultiBlockRegisterer registerer) {
+		if(!(LibVulpesItems.itemHoloProjector instanceof ItemProjector))
+			return;
+
+		List<DummyTileMultiBlock> multiblocks = registerer.getDummyMultiBlocks();
+		if(multiblocks == null)
+			return;
+
+		ItemProjector projector = (ItemProjector)LibVulpesItems.itemHoloProjector;
+		for(DummyTileMultiBlock multiblock : multiblocks) {
+			if(multiblock != null)
+				projector.registerDummy(multiblock);
+		}
+	}
+
 
 
 	@SubscribeEvent
@@ -592,4 +631,3 @@ public class LibVulpes {
 		time++;
 	}
 }
-

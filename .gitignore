@@ -1,6 +1,7 @@
 build/
 .gradle/
 libVulpes.txt
+/LibVulpes-Continuation.txt
 output/
 /asm
 /blueprints

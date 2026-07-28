@@ -11,6 +11,7 @@ import java.util.Map.Entry;
 import com.mojang.realmsclient.gui.ChatFormatting;
 
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
+import cpw.mods.fml.common.registry.LanguageRegistry;
 import cpw.mods.fml.relauncher.Side;
 import cpw.mods.fml.relauncher.SideOnly;
 import zmaster587.libVulpes.LibVulpes;
@@ -29,6 +30,7 @@ import zmaster587.libVulpes.network.INetworkItem;
 import zmaster587.libVulpes.network.PacketHandler;
 import zmaster587.libVulpes.network.PacketItemModifcation;
 import zmaster587.libVulpes.tile.TileSchematic;
+import zmaster587.libVulpes.tile.multiblock.DummyTileMultiBlock;
 import zmaster587.libVulpes.tile.multiblock.TileMultiBlock;
 import zmaster587.libVulpes.tile.multiblock.TilePlaceholder;
 import zmaster587.libVulpes.util.BlockPosition;
@@ -48,10 +50,12 @@ import net.minecraftforge.common.util.ForgeDirection;
 
 public class ItemProjector extends Item implements IModularInventory, IButtonInventory, INetworkItem {
 
-	ArrayList<TileMultiBlock> machineList;
-	ArrayList<BlockTile> blockList;
-	ArrayList<String> descriptionList;
+	final ArrayList<TileMultiBlock> machineList;
+	final ArrayList<BlockTile> blockList;
+	final ArrayList<String> descriptionList;
 	private static final String IDNAME = "machineId";
+	private static final double MAX_PROJECTION_DISTANCE_SQ = 64D * 64D;
+	private static final int WORLD_COORDINATE_LIMIT = 30000000;
 
 	public ItemProjector() {
 		machineList = new ArrayList<TileMultiBlock>();
@@ -60,57 +64,118 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 	}
 
 	public void registerMachine(TileMultiBlock multiblock, BlockTile mainBlock) {
+		if(multiblock == null || mainBlock == null || !isUsableStructure(multiblock.getStructure())) {
+			LibVulpes.logger.warning("Ignoring invalid projector machine registration");
+			return;
+		}
+		if(machineList.contains(multiblock))
+			return;
+
 		machineList.add(multiblock);
 		blockList.add(mainBlock);
-		HashMap<Object, Integer> map = new HashMap<Object, Integer>();
+		descriptionList.add(buildDescription(multiblock, mainBlock));
+	}
 
-		Object structure[][][] = multiblock.getStructure();
+	public void registerDummy(DummyTileMultiBlock multiblock) {
+		if(multiblock == null || !isUsableStructure(multiblock.getStructure())) {
+			LibVulpes.logger.warning("Ignoring invalid dummy projector registration");
+			return;
+		}
+		if(machineList.contains(multiblock))
+			return;
 
-		for(int i = 0; i < structure.length; i++) {
-			for(int j = 0; j < structure[i].length; j++) {
-				for(int k = 0; k < structure[i][j].length; k++) {
-					Object o = structure[i][j][k];
-					if(!map.containsKey(o)) {
-						map.put(o, 1);
-					}
-					else
-						map.put(o, map.get(o) + 1);
+		machineList.add(multiblock);
+		blockList.add(null);
+		descriptionList.add(buildDescription(multiblock, null));
+	}
+
+	private String buildDescription(TileMultiBlock multiblock, BlockTile mainBlock) {
+		HashMap<String, Integer> requirements = new HashMap<String, Integer>();
+		Object[][][] structure = multiblock.getStructure();
+
+		for(Object[][] layer : structure) {
+			for(Object[] row : layer) {
+				for(Object value : row) {
+					if(value instanceof Character && (Character)value == 'c')
+						continue;
+					String description = describeBlocks(getUsableBlocks(multiblock, value));
+					if(description.length() == 0)
+						continue;
+					Integer count = requirements.get(description);
+					requirements.put(description, count == null ? 1 : count + 1);
 				}
 			}
 		}
 
-		String str = Item.getItemFromBlock(mainBlock).getItemStackDisplayName(new ItemStack(mainBlock)) + " x1\n";
-
-		for(Entry<Object, Integer> entry : map.entrySet()) {
-
-			List<BlockMeta> blockMeta = multiblock.getAllowableBlocks(entry.getKey());
-
-			if(blockMeta.isEmpty() || Item.getItemFromBlock(blockMeta.get(0).getBlock()) == null )
-				continue;
-			for(int i = 0; i < blockMeta.size(); i++) {
-				String itemStr  = Item.getItemFromBlock(blockMeta.get(i).getBlock()).getItemStackDisplayName(new ItemStack(blockMeta.get(i).getBlock(), 1, blockMeta.get(i).getMeta()));
-				if(!itemStr.contains("tile.")) {
-					str = str + itemStr;
-					str = str + " or ";
-				}
-			}
-
-			if(str.endsWith(" or ")) {
-				str = str.substring(0, str.length()-4);
-			}
-			str = str + " x" + entry.getValue() + "\n";
+		StringBuilder description = new StringBuilder();
+		if(mainBlock != null) {
+			Item item = Item.getItemFromBlock(mainBlock);
+			if(item != null)
+				description.append(item.getItemStackDisplayName(new ItemStack(mainBlock))).append(" x1\n");
 		}
 
-		descriptionList.add(str);
+		for(Entry<String, Integer> entry : requirements.entrySet())
+			description.append(entry.getKey()).append(" x").append(entry.getValue()).append("\n");
+		return description.toString();
+	}
+
+	private String describeBlocks(List<BlockMeta> blocks) {
+		StringBuilder description = new StringBuilder();
+		for(BlockMeta blockMeta : blocks) {
+			String blockName = blockMeta.overrideName;
+			if(blockName == null || blockName.length() == 0) {
+				Item item = Item.getItemFromBlock(blockMeta.getBlock());
+				if(item == null)
+					continue;
+				int metadata = blockMeta.getMeta() == BlockMeta.WILDCARD ? 0 : blockMeta.getMeta();
+				blockName = item.getItemStackDisplayName(new ItemStack(blockMeta.getBlock(), 1, metadata));
+			}
+			if(blockName != null && blockName.length() > 0 && !blockName.contains("tile.")) {
+				if(description.length() > 0)
+					description.append(" or ");
+				description.append(blockName);
+			}
+		}
+		return description.toString();
+	}
+
+	private List<BlockMeta> getUsableBlocks(TileMultiBlock multiblock, Object structureEntry) {
+		List<BlockMeta> usableBlocks = new ArrayList<BlockMeta>();
+		List<BlockMeta> allowableBlocks = multiblock.getAllowableBlocks(structureEntry);
+		if(allowableBlocks == null)
+			return usableBlocks;
+
+		for(BlockMeta blockMeta : allowableBlocks) {
+			if(blockMeta != null && blockMeta.getBlock() != null)
+				usableBlocks.add(blockMeta);
+		}
+		return usableBlocks;
+	}
+
+	private boolean isUsableStructure(Object[][][] structure) {
+		if(structure == null || structure.length == 0)
+			return false;
+		for(Object[][] layer : structure) {
+			if(layer == null || layer.length == 0)
+				return false;
+			for(Object[] row : layer) {
+				if(row == null || row.length == 0)
+					return false;
+			}
+		}
+		return true;
 	}
 
 	@SubscribeEvent
 	@SideOnly(Side.CLIENT)
 	public void mouseEvent(MouseEvent event) {
-		if(Minecraft.getMinecraft().thePlayer.isSneaking() && event.dwheel != 0) {
-			ItemStack stack = Minecraft.getMinecraft().thePlayer.getHeldItem();
+		EntityPlayer player = Minecraft.getMinecraft().thePlayer;
+		if(player != null && player.isSneaking() && event.dwheel != 0) {
+			ItemStack stack = player.getHeldItem();
+			int machineId = getMachineId(stack);
 
-			if(stack != null && stack.getItem() == this && getMachineId(stack) != -1) {
+			if(stack != null && stack.getItem() == this && isValidMachineId(machineId)
+					&& machineList.get(machineId).isVisibleInProjector()) {
 				if(event.dwheel < 0) {
 					setYLevel(stack, getYLevel(stack) + 1);
 				}
@@ -123,51 +188,56 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 		}
 	}
 
-	private void clearStructure(World world, TileMultiBlock tile, ItemStack stack) {
-
-		int id = getMachineId(stack);
-		ForgeDirection direction = ForgeDirection.getOrientation(getDirection(stack));
-
-		TileMultiBlock multiblock = machineList.get(id);
-
+	private void clearStructure(World world, ItemStack stack) {
 		int prevMachineId = getPrevMachineId(stack);
-		Object[][][] structure;
-		if(prevMachineId >= 0 && prevMachineId < machineList.size()) {
-			structure = machineList.get(prevMachineId).getStructure();
+		int directionId = getDirection(stack);
+		Vector3F<Integer> basepos = getBasePosition(stack);
+		if(world == null || prevMachineId < 0 || prevMachineId >= machineList.size()
+				|| !isValidDirection(directionId) || basepos == null)
+			return;
 
-			Vector3F<Integer> basepos = getBasePosition(stack);
+		TileMultiBlock previousMachine = machineList.get(prevMachineId);
+		if(previousMachine == null || !isUsableStructure(previousMachine.getStructure()))
+			return;
 
-			for(int y = 0; y < structure.length; y++) {
-				for(int z=0 ; z < structure[0].length; z++) {
-					for(int x=0; x < structure[0][0].length; x++) {
+		ForgeDirection direction = ForgeDirection.getOrientation(directionId);
+		Object[][][] structure = previousMachine.getStructure();
+		for(int y = 0; y < structure.length; y++) {
+			for(int z = 0; z < structure[y].length; z++) {
+				for(int x = 0; x < structure[y][z].length; x++) {
+					int globalX = basepos.x - x*direction.offsetZ + z*direction.offsetX;
+					int globalZ = basepos.z + x*direction.offsetX + z*direction.offsetZ;
+					int globalY = -y + structure.length + basepos.y - 1;
 
-						int globalX = basepos.x - x*direction.offsetZ + z*direction.offsetX;
-						int globalZ = basepos.z + (x* direction.offsetX) + (z*direction.offsetZ);
-
-						if(world.getBlock(globalX, basepos.y + y, globalZ) == LibVulpesBlocks.blockPhantom) 
-							world.setBlockToAir(globalX, basepos.y + y, globalZ);
+					if(!isValidBlockPosition(world, globalX, globalY, globalZ))
+						continue;
+					if(world.getBlock(globalX, globalY, globalZ) == LibVulpesBlocks.blockPhantom) {
+						world.setBlockToAir(globalX, globalY, globalZ);
+						world.removeTileEntity(globalX, globalY, globalZ);
 					}
 				}
 			}
 		}
 	}
 
-	private void RebuildStructure(World world, TileMultiBlock tile, ItemStack stack, int posX, int posY, int posZ, ForgeDirection orientation) {
-
+	private void RebuildStructure(World world, ItemStack stack, int posX, int posY, int posZ, ForgeDirection orientation) {
 		int id = getMachineId(stack);
-		ForgeDirection direction = ForgeDirection.getOrientation(getDirection(stack));
+		if(world == null || stack == null || id < 0 || id >= machineList.size()
+				|| orientation == null || !isValidDirection(orientation.ordinal()))
+			return;
 
 		TileMultiBlock multiblock = machineList.get(id);
-		Object[][][] structure;
+		if(multiblock == null || !isUsableStructure(multiblock.getStructure()))
+			return;
 
-		clearStructure(world, tile, stack);
-
-		structure = multiblock.getStructure();
-		direction = orientation;
-
+		clearStructure(world, stack);
+		Object[][][] structure = multiblock.getStructure();
 		int y = getYLevel(stack);
-		int endNumber, startNumber;
+		if(y < -1 || y >= structure.length)
+			y = -1;
 
+		int endNumber;
+		int startNumber;
 		if(y == -1) {
 			startNumber = 0;
 			endNumber = structure.length;
@@ -177,32 +247,41 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 			endNumber = y + 1;
 		}
 		for(y=startNumber; y < endNumber; y++) {
-			for(int z=0 ; z < structure[0].length; z++) {
-				for(int x=0; x < structure[0][0].length; x++) {
-					List<BlockMeta> block;
+			for(int z = 0; z < structure[y].length; z++) {
+				for(int x = 0; x < structure[y][z].length; x++) {
+					List<BlockMeta> blocks;
 					if(structure[y][z][x] instanceof Character && (Character)structure[y][z][x] == 'c') {
-						block = new ArrayList<BlockMeta>();
-						block.add(new BlockMeta(blockList.get(id), orientation.ordinal()));
+						BlockTile mainBlock = id < blockList.size() ? blockList.get(id) : null;
+						if(mainBlock == null)
+							continue;
+						blocks = new ArrayList<BlockMeta>();
+						blocks.add(new BlockMeta(mainBlock, orientation.ordinal()));
 					}
-					else if(multiblock.getAllowableBlocks(structure[y][z][x]).isEmpty())
-						continue;
 					else
-						block = multiblock.getAllowableBlocks(structure[y][z][x]);
+						blocks = getUsableBlocks(multiblock, structure[y][z][x]);
 
-					int globalX = posX - x*direction.offsetZ + z*direction.offsetX;
-					int globalZ = posZ + (x* direction.offsetX)  + (z*direction.offsetZ);
+					blocks = getProjectionBlocks(blocks);
+					if(blocks.isEmpty())
+						continue;
+
+					BlockMeta selectedBlock = blocks.get(0);
+					int globalX = posX - x*orientation.offsetZ + z*orientation.offsetX;
+					int globalZ = posZ + x*orientation.offsetX + z*orientation.offsetZ;
 					int globalY = -y + structure.length + posY - 1;
 
-					if((world.isAirBlock(globalX, globalY, globalZ) || world.getBlock(globalX, globalY, globalZ).isReplaceable(world, globalX, globalY, globalZ)) && block.get(0).getBlock().getMaterial() != Material.air) {
-						//block = (Block)structure[y][z][x];
-						world.setBlock(globalX, globalY, globalZ, LibVulpesBlocks.blockPhantom, block.get(0).getMeta(), 3);
+					if(!isValidBlockPosition(world, globalX, globalY, globalZ))
+						continue;
+					if(world.isAirBlock(globalX, globalY, globalZ)
+							|| world.getBlock(globalX, globalY, globalZ).isReplaceable(world, globalX, globalY, globalZ)) {
+						if(!world.setBlock(globalX, globalY, globalZ, LibVulpesBlocks.blockPhantom, selectedBlock.getMeta(), 3))
+							continue;
 						TileEntity newTile = world.getTileEntity(globalX, globalY, globalZ);
 
-						//TODO: compatibility fixes with the tile entity not reflecting current block
-						if(newTile instanceof TilePlaceholder) {
-							((TileSchematic)newTile).setReplacedBlock(block);
-							((TilePlaceholder)newTile).setReplacedTileEntity(block.get(0).getBlock().createTileEntity(null, 0));
-						}
+						if(newTile instanceof TileSchematic)
+							((TileSchematic)newTile).setReplacedBlock(blocks);
+						if(newTile instanceof TilePlaceholder)
+							((TilePlaceholder)newTile).setReplacedTileEntity(
+									selectedBlock.getBlock().createTileEntity(world, selectedBlock.getMeta()));
 					}
 				}
 			}
@@ -210,6 +289,51 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 		this.setPrevMachineId(stack, id);
 		this.setBasePosition(stack, posX, posY, posZ);
 		this.setDirection(stack, orientation.ordinal());
+	}
+
+	private List<BlockMeta> getProjectionBlocks(List<BlockMeta> blocks) {
+		List<BlockMeta> projectedBlocks = new ArrayList<BlockMeta>();
+		for(BlockMeta blockMeta : blocks) {
+			if(blockMeta == null || blockMeta.getBlock() == null
+					|| blockMeta.getBlock().getMaterial() == Material.air)
+				continue;
+			int metadata = blockMeta.getMeta() == BlockMeta.WILDCARD ? 0 : blockMeta.getMeta();
+			metadata = Math.max(0, Math.min(15, metadata));
+			projectedBlocks.add(new BlockMeta(blockMeta.getBlock(), metadata, blockMeta.overrideName));
+		}
+		return projectedBlocks;
+	}
+
+	private boolean isValidDirection(int direction) {
+		return direction >= ForgeDirection.NORTH.ordinal()
+				&& direction <= ForgeDirection.EAST.ordinal();
+	}
+
+	private boolean isValidBlockPosition(World world, int x, int y, int z) {
+		return world != null
+				&& y >= 0
+				&& y < world.getHeight()
+				&& x > -WORLD_COORDINATE_LIMIT
+				&& x < WORLD_COORDINATE_LIMIT
+				&& z > -WORLD_COORDINATE_LIMIT
+				&& z < WORLD_COORDINATE_LIMIT;
+	}
+
+	private boolean isProjectionOriginNearPlayer(
+			EntityPlayer player, int x, int y, int z) {
+		if(player == null || !isValidBlockPosition(player.worldObj, x, y, z))
+			return false;
+		double deltaX = x + 0.5D - player.posX;
+		double deltaY = y + 0.5D - player.posY;
+		double deltaZ = z + 0.5D - player.posZ;
+		return deltaX*deltaX + deltaY*deltaY + deltaZ*deltaZ
+				<= MAX_PROJECTION_DISTANCE_SQ;
+	}
+
+	private boolean isValidMachineId(int machineId) {
+		return machineId >= 0 && machineId < machineList.size()
+				&& machineList.get(machineId) != null
+				&& isUsableStructure(machineList.get(machineId).getStructure());
 	}
 
 	@Override
@@ -222,10 +346,12 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 		}
 
 		int id = getMachineId(stack);
-		if(!player.isSneaking() && id != -1 && world.isRemote) {
+		if(!player.isSneaking() && isValidMachineId(id)
+				&& machineList.get(id).isVisibleInProjector() && world.isRemote) {
 			ForgeDirection dir = ForgeDirection.getOrientation(ZUtils.getDirectionFacing(player.rotationYaw - 180));
-			TileMultiBlock tile = machineList.get(getMachineId(stack));
-
+			TileMultiBlock tile = machineList.get(id);
+			if(tile == null || !isUsableStructure(tile.getStructure()))
+				return super.onItemRightClick(stack, world, player);
 
 			int x = tile.getStructure()[0][0].length;
 			int z = tile.getStructure()[0].length;
@@ -234,11 +360,15 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 			int globalZ = ((x* dir.offsetX)  + (z*dir.offsetZ))/2;
 
 			MovingObjectPosition pos = Minecraft.getMinecraft().objectMouseOver;
+			if(pos == null || pos.typeOfHit != MovingObjectPosition.MovingObjectType.BLOCK)
+				return super.onItemRightClick(stack, world, player);
 
 			TileEntity tile2;
 			if((tile2 = world.getTileEntity(pos.blockX, pos.blockY, pos.blockZ)) instanceof TileMultiBlock) {
 				for(TileMultiBlock tiles:  machineList) {
-					if(tile2.getClass() == tiles.getClass()) {
+					if(tiles != null && tiles.isVisibleInProjector()
+							&& tile2.getClass() == tiles.getClass()
+							&& isUsableStructure(tiles.getStructure())) {
 
 						setMachineId(stack, machineList.indexOf(tiles));
 						Object[][][] structure = tiles.getStructure();
@@ -246,14 +376,23 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 						BlockPosition controller = getControllerOffset(structure);
 						dir = BlockMultiblockMachine.getFront(tile2.getBlockMetadata()).getOpposite();
 
-						controller.y = (short) (structure.length - controller.y);
-
-						globalX = (-controller.x*dir.offsetZ + controller.z*dir.offsetX);
-						globalZ = ((controller.x* dir.offsetX)  + (controller.z*dir.offsetZ));
+						int yOffset = 0;
+						if(controller != null) {
+							controller.y = (short)(structure.length - controller.y);
+							yOffset = controller.y;
+							globalX = -controller.x*dir.offsetZ + controller.z*dir.offsetX;
+							globalZ = controller.x*dir.offsetX + controller.z*dir.offsetZ;
+						}
+						else {
+							int matchedX = structure[0][0].length;
+							int matchedZ = structure[0].length;
+							globalX = (-matchedX*dir.offsetZ + matchedZ*dir.offsetX)/2;
+							globalZ = (matchedX*dir.offsetX + matchedZ*dir.offsetZ)/2;
+						}
 
 						setDirection(stack, dir.ordinal());
 
-						setBasePosition(stack, pos.blockX - globalX, pos.blockY - controller.y  + 1, pos.blockZ - globalZ);
+						setBasePosition(stack, pos.blockX - globalX, pos.blockY - yOffset + 1, pos.blockZ - globalZ);
 						PacketHandler.sendToServer(new PacketItemModifcation(this, player, (byte)0));
 						PacketHandler.sendToServer(new PacketItemModifcation(this, player, (byte)2));
 						return super.onItemRightClick(stack, world, player);
@@ -274,9 +413,11 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 	}
 
 	protected BlockPosition getControllerOffset(Object[][][] structure) {
+		if(!isUsableStructure(structure))
+			return null;
 		for(int y = 0; y < structure.length; y++) {
-			for(int z = 0; z < structure[0].length; z++) {
-				for(int x = 0; x< structure[0][0].length; x++) {
+			for(int z = 0; z < structure[y].length; z++) {
+				for(int x = 0; x < structure[y][z].length; x++) {
 					if(structure[y][z][x] instanceof Character && (Character)structure[y][z][x] == 'c')
 						return new BlockPosition(x, y, z);
 				}
@@ -290,9 +431,18 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 		List<ModuleBase> modules = new LinkedList<ModuleBase>();
 		List<ModuleBase> btns = new LinkedList<ModuleBase>();
 
-		for(int i = 0; 	i <	machineList.size(); i++) {
-			TileMultiBlock multiblock = machineList.get(i);
-			btns.add(new ModuleButton(60, 4 + i*24, i, LibVulpes.proxy.getLocalizedString(multiblock.getMachineName()), this,  zmaster587.libVulpes.inventory.TextureResources.buttonBuild));
+		int visibleIndex = 0;
+		for(int machineId = 0; machineId < machineList.size(); machineId++) {
+			TileMultiBlock multiblock = machineList.get(machineId);
+			if(multiblock == null || !multiblock.isVisibleInProjector())
+				continue;
+			btns.add(new ModuleButton(20 + visibleIndex % 2 * 100,
+					4 + visibleIndex / 2 * 24,
+					machineId,
+					LibVulpes.proxy.getLocalizedString(multiblock.getMachineName()),
+					this,
+					TextureResources.buttonBuild));
+			visibleIndex++;
 		}
 
 		ModuleContainerPan panningContainer = new ModuleContainerPan(5, 20, btns, new LinkedList<ModuleBase>(), TextureResources.starryBG, 160, 100, 0, 500);
@@ -315,7 +465,8 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 	public void onInventoryButtonPressed(int buttonId) {
 		//PacketHandler.sendToServer(new PacketItemModifcation(this, Minecraft.getMinecraft().thePlayer, (byte)buttonId));
 		ItemStack stack = Minecraft.getMinecraft().thePlayer.getHeldItem();
-		if(stack != null && stack.getItem() == this) {
+		if(stack != null && stack.getItem() == this && isValidMachineId(buttonId)
+				&& machineList.get(buttonId).isVisibleInProjector()) {
 			setMachineId(stack, buttonId);
 			PacketHandler.sendToServer(new PacketItemModifcation(this, Minecraft.getMinecraft().thePlayer, (byte)0));
 		}
@@ -334,7 +485,7 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 	}
 
 	private int getMachineId(ItemStack stack) {
-		if(stack.hasTagCompound()) {
+		if(stack != null && stack.hasTagCompound() && stack.getTagCompound().hasKey(IDNAME)) {
 			return stack.getTagCompound().getInteger(IDNAME);
 		}
 		else
@@ -349,18 +500,23 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 		else 
 			nbt = new NBTTagCompound();
 
-		TileMultiBlock machine = machineList.get(getMachineId(stack));
+		int machineId = getMachineId(stack);
+		if(machineId < 0 || machineId >= machineList.size())
+			return;
+		TileMultiBlock machine = machineList.get(machineId);
+		if(machine == null || !isUsableStructure(machine.getStructure()))
+			return;
 
-		if(level == -2)
+		if(level <= -2)
 			level = machine.getStructure().length-1;
-		else if(level == machine.getStructure().length)
+		else if(level >= machine.getStructure().length)
 			level = -1;
 		nbt.setInteger("yOffset", level);
 		stack.setTagCompound(nbt);
 	}
 
 	private int getYLevel(ItemStack stack) {
-		if(stack.hasTagCompound()) {
+		if(stack != null && stack.hasTagCompound() && stack.getTagCompound().hasKey("yOffset")) {
 			return stack.getTagCompound().getInteger("yOffset");
 		}
 		else
@@ -380,7 +536,7 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 	}
 
 	private int getPrevMachineId(ItemStack stack) {
-		if(stack.hasTagCompound()) {
+		if(stack != null && stack.hasTagCompound() && stack.getTagCompound().hasKey(IDNAME + "Prev")) {
 			return stack.getTagCompound().getInteger(IDNAME + "Prev");
 		}
 		else
@@ -388,13 +544,12 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 	}
 
 	private Vector3F<Integer> getBasePosition(ItemStack stack) {
-		if(stack.hasTagCompound()) {
+		if(stack != null && stack.hasTagCompound()) {
 			NBTTagCompound nbt = stack.getTagCompound();
-			Vector3F<Integer> vec = new Vector3F<Integer>(nbt.getInteger("x"), nbt.getInteger("y"), nbt.getInteger("z"));
-			return vec;
+			if(nbt.hasKey("x") && nbt.hasKey("y") && nbt.hasKey("z"))
+				return new Vector3F<Integer>(nbt.getInteger("x"), nbt.getInteger("y"), nbt.getInteger("z"));
 		}
-		else
-			return null;
+		return null;
 	}
 
 	private void setBasePosition(ItemStack stack, int x, int y, int z) {
@@ -413,7 +568,7 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 	}
 
 	public int getDirection(ItemStack stack) {
-		if(stack.hasTagCompound()) {
+		if(stack != null && stack.hasTagCompound() && stack.getTagCompound().hasKey("dir")) {
 			return stack.getTagCompound().getInteger("dir");
 		}
 		else
@@ -439,11 +594,13 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 			List list, boolean bool) {
 		super.addInformation(stack, player, list, bool);
 
-		list.add("Shift right-click: opens machine selection interface");
-		list.add("Shift-scroll: moves cross-section");
+		list.add(LanguageRegistry.instance().getStringLocalization("item.Projector.desc.0"));
+		list.add(LanguageRegistry.instance().getStringLocalization("item.Projector.desc.1"));
+		list.add(LanguageRegistry.instance().getStringLocalization("item.Projector.desc.2"));
 
 		int id = getMachineId(stack);
-		if(id != -1) {
+		if(isValidMachineId(id) && machineList.get(id).isVisibleInProjector()
+				&& id < descriptionList.size()) {
 			list.add("");
 			list.add(ChatFormatting.GREEN + LibVulpes.proxy.getLocalizedString(machineList.get(id).getMachineName()));
 			String str = descriptionList.get(id);
@@ -465,22 +622,33 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 		else if(id == 2) {
 
 			Vector3F<Integer> pos = getBasePosition(stack);
+			int direction = getDirection(stack);
+			boolean hasPosition = pos != null && isValidDirection(direction);
+			out.writeBoolean(hasPosition);
+			if(!hasPosition)
+				return;
 			out.writeInt(pos.x);
 			out.writeInt(pos.y);
 			out.writeInt(pos.z);
-			out.writeInt(getDirection(stack));
+			out.writeInt(direction);
 		}
 	}
 
 	@Override
 	public void readDataFromNetwork(ByteBuf in, byte packetId,
 			NBTTagCompound nbt, ItemStack stack) {
+		if(nbt == null)
+			return;
 		if(packetId == 0) {
 			nbt.setInteger(IDNAME, in.readInt());
 		}
 		else if(packetId == 1)
 			nbt.setInteger("yLevel", in.readInt());
 		else if(packetId == 2) {
+			boolean hasPosition = in.readBoolean();
+			nbt.setBoolean("hasPosition", hasPosition);
+			if(!hasPosition)
+				return;
 			nbt.setInteger("x", in.readInt());
 			nbt.setInteger("y", in.readInt());
 			nbt.setInteger("z", in.readInt());
@@ -491,25 +659,40 @@ public class ItemProjector extends Item implements IModularInventory, IButtonInv
 	@Override
 	public void useNetworkData(EntityPlayer player, Side side, byte id,
 			NBTTagCompound nbt, ItemStack stack) {
+		if(player == null || nbt == null || stack == null)
+			return;
 		if(id == 0) {
 			int machineId = nbt.getInteger(IDNAME);
-			setMachineId(stack, nbt.getInteger(IDNAME));
+			if(!isValidMachineId(machineId) || !machineList.get(machineId).isVisibleInProjector())
+				return;
+			setMachineId(stack, machineId);
 			TileMultiBlock tile = machineList.get(machineId);
 			setYLevel(stack, tile.getStructure().length-1);
 		}
 		else if(id == 1) {
+			int machineId = getMachineId(stack);
+			if(!isValidMachineId(machineId))
+				return;
 			setYLevel(stack, nbt.getInteger("yLevel"));
 			Vector3F<Integer> vec = getBasePosition(stack);
-			RebuildStructure(player.worldObj, this.machineList.get(getMachineId(stack)), stack, vec.x, vec.y, vec.z, ForgeDirection.getOrientation(getDirection(stack)));
+			int direction = getDirection(stack);
+			if(vec != null && isValidDirection(direction)
+					&& isProjectionOriginNearPlayer(player, vec.x, vec.y, vec.z))
+				RebuildStructure(player.worldObj, stack,
+						vec.x, vec.y, vec.z, ForgeDirection.getOrientation(direction));
 		}
 		else if(id == 2) {
+			int machineId = getMachineId(stack);
+			if(!isValidMachineId(machineId) || !nbt.getBoolean("hasPosition"))
+				return;
 			int x = nbt.getInteger("x");
 			int y = nbt.getInteger("y");
 			int z = nbt.getInteger("z");
 			int dir = nbt.getInteger("dir");
-			
-			if(getMachineId(stack) != -1)
-				RebuildStructure(player.worldObj, this.machineList.get(getMachineId(stack)), stack, x, y, z, ForgeDirection.getOrientation(dir));
+			if(isValidDirection(dir)
+					&& isProjectionOriginNearPlayer(player, x, y, z))
+				RebuildStructure(player.worldObj, stack,
+						x, y, z, ForgeDirection.getOrientation(dir));
 		}
 	}
 }

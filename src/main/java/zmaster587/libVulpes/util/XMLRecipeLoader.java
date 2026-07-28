@@ -1,31 +1,33 @@
 package zmaster587.libVulpes.util;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.LinkedList;
-import java.util.List;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
-
 import net.minecraft.block.Block;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.JsonToNBT;
+import net.minecraft.nbt.NBTBase;
+import net.minecraft.nbt.NBTException;
+import net.minecraft.nbt.NBTTagCompound;
 import net.minecraftforge.fluids.Fluid;
 import net.minecraftforge.fluids.FluidRegistry;
 import net.minecraftforge.fluids.FluidStack;
 import net.minecraftforge.oredict.OreDictionary;
-
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 import org.xml.sax.SAXException;
-
 import zmaster587.libVulpes.LibVulpes;
 import zmaster587.libVulpes.interfaces.IRecipe;
 import zmaster587.libVulpes.recipe.NumberedOreDictStack;
 import zmaster587.libVulpes.recipe.RecipesMachine;
 import zmaster587.libVulpes.tile.TileEntityMachine;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+import java.io.File;
+import java.io.IOException;
+import java.util.LinkedList;
+import java.util.List;
+
 
 public class XMLRecipeLoader {
 
@@ -41,8 +43,15 @@ public class XMLRecipeLoader {
 		DocumentBuilder docBuilder;
 		doc = null;
 		try {
-			docBuilder = DocumentBuilderFactory.newInstance().newDocumentBuilder();
+			DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+			factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+			factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+			factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+			factory.setXIncludeAware(false);
+			factory.setExpandEntityReferences(false);
+			docBuilder = factory.newDocumentBuilder();
 		} catch (ParserConfigurationException e) {
+			LibVulpes.logger.warning("Unable to configure XML recipe parser: " + e.getMessage());
 			return false;
 		}
 
@@ -59,21 +68,34 @@ public class XMLRecipeLoader {
 	}
 
 	public void registerRecipes(Class<? extends TileEntityMachine> clazz) {
+		if(clazz == null) {
+			LibVulpes.logger.warning("Cannot register XML recipes without a machine class");
+			return;
+		}
+		if(doc == null) {
+			LibVulpes.logger.warning("Cannot register recipes before an XML document is loaded");
+			return;
+		}
 		Node masterNode = doc.getElementsByTagName("Recipes").item(0);
 		int recipeNum = 1;
+		if(masterNode == null) {
+			LibVulpes.logger.warning("Missing \"Recipes\" root node in " + fileName);
+			return;
+		}
 
 		if(masterNode.hasAttributes()) {
 			Node defaultNode = masterNode.getAttributes().getNamedItem("useDefault");
-			if(defaultNode != null && defaultNode.getNodeValue().equals("false"))
+			if(defaultNode != null && defaultNode.getNodeValue().equalsIgnoreCase("false")
+					&& RecipesMachine.getInstance().getRecipes(clazz) != null)
 				RecipesMachine.getInstance().clearRecipes(clazz);
 		}
 
-		masterNode = masterNode.getChildNodes().item(1);
+		masterNode = masterNode.getFirstChild();
 		
 		while(masterNode != null) {
 			try {
 				int time = 200, energy = 0;
-				if(masterNode.getNodeType() != doc.ELEMENT_NODE) {
+				if(masterNode.getNodeType() != Node.ELEMENT_NODE) {
 					masterNode = masterNode.getNextSibling();
 					continue;
 				}
@@ -107,30 +129,34 @@ public class XMLRecipeLoader {
 					continue;
 				}
 
-				List<Object> inputList = new LinkedList<Object>();
+				List<Object> inputList = new LinkedList<>();
+				boolean invalidInput = false;
 
 				for(int i = 0; i < inputNode.getChildNodes().getLength(); i++) {
 					Node node = inputNode.getChildNodes().item(i);
-					if(node.getNodeType() != doc.ELEMENT_NODE) continue;
+					if(node.getNodeType() != Node.ELEMENT_NODE) continue;
 
 					Object obj = parseItemType(node, false);
 					if(obj == null) {
 						LibVulpes.logger.warning("Invalid item \"input\" (" + node.getNodeName() + " " + node.getTextContent() + ") in recipe " + recipeNum + " in " + fileName + "!  Skipping.");
+						invalidInput = true;
 					}
 					else
 						inputList.add(obj);
 				}
 
-				List<Object> outputList = new LinkedList<Object>();
+				List<Object> outputList = new LinkedList<>();
+				boolean invalidOutput = false;
 
 				for(int i = 0; i < outputNode.getChildNodes().getLength(); i++) {
 					Node node = outputNode.getChildNodes().item(i);
 
-					if(node.getNodeType() != doc.ELEMENT_NODE) continue;
+					if(node.getNodeType() != Node.ELEMENT_NODE) continue;
 
 					Object obj = parseItemType(node, true);
 					if(obj == null) {
 						LibVulpes.logger.warning("Invalid item \"output\" (" + node.getNodeName() + " " + node.getTextContent() + ") in recipe " + recipeNum + " in " + fileName + "!  Skipping.");
+						invalidOutput = true;
 					}
 					else
 						outputList.add(obj);
@@ -159,14 +185,17 @@ public class XMLRecipeLoader {
 					LibVulpes.logger.info("Recipe " + recipeNum + " has no time or power consumption");
 				}
 
-				if(outputList.isEmpty()) 
-					LibVulpes.logger.info("Output List emtpy in recipe " + recipeNum);
+				if(invalidInput || inputList.isEmpty()) {
+					LibVulpes.logger.warning("Input list is invalid or empty in recipe " + recipeNum + "; recipe skipped");
+				}
+				else if(invalidOutput || outputList.isEmpty()) {
+					LibVulpes.logger.warning("Output list is invalid or empty in recipe " + recipeNum + "; recipe skipped");
+				}
 				else {
-					LibVulpes.logger.info("Sucessfully added recipe to " + clazz.getName() + " for " + inputList.toString() + " -> " + outputList.toString());
 					RecipesMachine.getInstance().addRecipe(clazz, outputList, time, energy, inputList);
 				}
 			} catch (Exception e) {
-				LibVulpes.logger.warning("Recipe entry #" + recipeNum + " load failed for '" + clazz.getCanonicalName() + "'!");
+				LibVulpes.logger.warning("Recipe entry #" + recipeNum + " load failed for '" + clazz.getCanonicalName() + "': " + e.getMessage());
 			}
 
 			recipeNum++;
@@ -175,141 +204,213 @@ public class XMLRecipeLoader {
 	}
 
 	public Object parseItemType(Node node, boolean output) {
-		if(node.getNodeName().equals("itemStack")) {
-			String text = node.getTextContent();
-			String splitStr[];
-			
-			//Backwards compat, " " used to be the delimiter
-			splitStr = text.contains(";") ? text.split(";") : text.split(" ");
-			String name = splitStr[0].trim();
-			
-			int meta = 0;
-			int size = 1;
-			//format: "name meta size"
-			if(splitStr.length > 1) {
+        switch (node.getNodeName()) {
+            case "itemStack": {
+                String text = node.getTextContent().trim();
+                String[] splitStr = text.contains(";")
+						? text.split(";", 4)
+						: text.split("\\s+");
+                String name = splitStr[0].trim();
+                int size = 1;
+                int meta = 0;
+                String nbtText = "";
 				try {
-					size = Integer.parseInt(splitStr[1].trim());
-				} catch( NumberFormatException e) {}
-			}
-			if(splitStr.length > 2) {
-				try {
-					meta= Integer.parseInt(splitStr[2].trim());
-				} catch (NumberFormatException e) {}
-			}
-
-			ItemStack stack = null;
-			Block block = Block.getBlockFromName(name);
-			if(block == null) {
-
-				//Try getting item by name first
-				Item item = (Item) Item.itemRegistry.getObject(name);
-
-				if(item != null)
-					stack = new ItemStack(item, size, meta);
-				else {
-					try {
-
-						item = Item.getItemById(Integer.parseInt(name));
-						if(item != null)
-							stack = new ItemStack(item, size, meta);
-					} catch (NumberFormatException e) { return null;}
-
+					if(splitStr.length > 1)
+						size = Integer.parseInt(splitStr[1].trim());
+					if(splitStr.length > 2)
+						meta = Integer.parseInt(splitStr[2].trim());
+					if(splitStr.length > 3)
+						nbtText = splitStr[3].trim();
 				}
-			}
-			else
-				stack = new ItemStack(block, size, meta);
+				catch(NumberFormatException e) {
+					LibVulpes.logger.warning("Invalid item count or metadata in XML entry: " + text);
+					return null;
+				}
 
-			return stack;
-		}
-		else if(node.getNodeName().equals("oreDict")) {
-			String text = node.getTextContent();
-			String splitStr[];
-			
-			//Backwards compat, " " used to be the delimiter
-			splitStr = text.contains(";") ? text.split(";") : text.split(" ");
-			String name = splitStr[0].trim();
-			if(OreDictionary.doesOreNameExist(name)) {
+				if(size <= 0) {
+					LibVulpes.logger.warning("Item count must be positive in XML entry: " + text);
+					return null;
+				}
 
-				Object ret = splitStr[0];
+				ItemStack stack = createItemStack(name, size, meta);
+				if(stack == null)
+					return null;
+				if(!nbtText.isEmpty()) {
+					try {
+						NBTBase nbt = JsonToNBT.func_150315_a(nbtText);
+						if(!(nbt instanceof NBTTagCompound)) {
+							LibVulpes.logger.warning("Item NBT must be a compound in XML entry: " + text);
+							return null;
+						}
+						stack.setTagCompound((NBTTagCompound)nbt);
+					}
+					catch(NBTException e) {
+						LibVulpes.logger.warning("Invalid item NBT in XML entry: " + text + " (" + e.getMessage() + ")");
+						return null;
+					}
+				}
+				return stack;
+            }
+            case "oreDict": {
+                String text = node.getTextContent().trim();
+                String[] splitStr = text.contains(";")
+						? text.split(";", 2)
+						: text.split("\\s+", 2);
+                String name = splitStr[0].trim();
+				List<ItemStack> ores = OreDictionary.getOres(name);
+				if(ores.isEmpty())
+					return null;
+
 				int number = 1;
 				if(splitStr.length > 1) {
-
 					try {
 						number = Integer.parseInt(splitStr[1].trim());
-					} catch (NumberFormatException e) {}
+					}
+					catch(NumberFormatException e) {
+						LibVulpes.logger.warning("Invalid Ore Dictionary count in XML entry: " + text);
+						return null;
+					}
 				}
+				if(number <= 0)
+					return null;
 
-				if(splitStr.length >= 1) {
-					if(output) {
-						List<ItemStack> list = OreDictionary.getOres(name);
-						if(!list.isEmpty()) {
-							ItemStack oreDict = OreDictionary.getOres(name).get(0);
-							ret = new ItemStack(oreDict.getItem(), number, oreDict.getItemDamage());
+				if(output) {
+					for(ItemStack oreDict : ores) {
+						if(oreDict != null && oreDict.getItem() != null) {
+							ItemStack outputStack = oreDict.copy();
+							outputStack.stackSize = number;
+							return outputStack;
 						}
 					}
-					else
-						ret = new NumberedOreDictStack(splitStr[0], number);
+					return null;
 				}
+				return new NumberedOreDictStack(name, number);
+            }
+            case "fluidStack": {
 
-				return ret;
-			}
-		}
-		else if(node.getNodeName().equals("fluidStack")) {
-			
-			String text = node.getTextContent();
-			String splitStr[];
-			
-			//Backwards compat, " " used to be the delimiter
-			splitStr = text.contains(";") ? text.split(";") : text.split(" ");
-			
-			Fluid fluid;
-			if((fluid = FluidRegistry.getFluid(splitStr[0].trim())) != null) {
-				int amount = 1000;
-				if(splitStr.length > 1) {
-					try {
-						amount = Integer.parseInt(splitStr[1].trim());
-					} catch (NumberFormatException e) {}
-				}
+                String text = node.getTextContent().trim();
+                String[] splitStr = text.contains(";")
+						? text.split(";", 2)
+						: text.split("\\s+", 2);
 
-				return new FluidStack(fluid, amount);
-			}
-		}
+                Fluid fluid;
+                if ((fluid = FluidRegistry.getFluid(splitStr[0].trim())) != null) {
+                    int amount = 1000;
+                    if (splitStr.length > 1) {
+                        try {
+                            amount = Integer.parseInt(splitStr[1].trim());
+                        } catch (NumberFormatException e) {
+							LibVulpes.logger.warning("Invalid fluid amount in XML entry: " + text);
+							return null;
+                        }
+                    }
+					if(amount <= 0)
+						return null;
+                    return new FluidStack(fluid, amount);
+                }
+                break;
+            }
+        }
 
 		return null;
 	}
 
+	private static ItemStack createItemStack(String name, int size, int meta) {
+		Block block = Block.getBlockFromName(name);
+		if(block != null)
+			return new ItemStack(block, size, meta);
+
+		Item item = (Item)Item.itemRegistry.getObject(name);
+		if(item == null) {
+			try {
+				item = Item.getItemById(Integer.parseInt(name));
+			}
+			catch(NumberFormatException ignored) {
+				return null;
+			}
+		}
+		return item == null ? null : new ItemStack(item, size, meta);
+	}
 
 	public static String writeRecipe(IRecipe recipe) {
+		if(recipe == null)
+			throw new IllegalArgumentException("recipe cannot be null");
+
 		int index = 0;
-		String string = "\t<Recipe timeRequired=\"" + recipe.getTime() + "\" power =\"" + recipe.getPower() + "\">\n" +
-				"\t\t<input>\n";
+		StringBuilder string = new StringBuilder("\t<Recipe timeRequired=\"" + recipe.getTime() + "\" power=\"" + recipe.getPower() + "\">\n" +
+                "\t\t<input>\n");
 		for(List<ItemStack> stackList : recipe.getIngredients()) {
-			if(!stackList.isEmpty()) {
-				ItemStack stack = stackList.get(0);
-				String oreStr = recipe.getOreDictString(index++);
+			String oreStr = recipe.getOreDictString(index++);
+			ItemStack stack = getFirstValidStack(stackList);
+			if(stack != null) {
 				if(oreStr != null) {
-					string += "\t\t\t<oreDict>" + oreStr + (stack.stackSize > 1 ? (";" + stack.stackSize) : "") + "</oreDict>\n";
+					string.append("\t\t\t<oreDict>")
+							.append(escapeXml(oreStr))
+							.append(stack.stackSize > 1 ? (";" + stack.stackSize) : "")
+							.append("</oreDict>\n");
 				}
 				else {
-					string += "\t\t\t<itemStack>" + stack.getItem().delegate.name() + (stack.stackSize > 1 ? (";" + stack.stackSize) : (stack.getItemDamage() > 0 ? ";1" : "") ) + (stack.getItemDamage() > 0 ? (";" + stack.getItemDamage()) : "") +  "</itemStack>\n";
+					string.append("\t\t\t<itemStack>")
+							.append(escapeXml(writeItemStack(stack)))
+							.append("</itemStack>\n");
 				}
 			}
 		}
 		for(FluidStack stack : recipe.getFluidIngredients()) {
-			string += "\t\t\t<fluidStack>" + FluidRegistry.getDefaultFluidName(stack.getFluid()).split(":")[1] + ";" + stack.amount + "</fluidStack>\n";
+			String fluid = writeFluidStack(stack);
+			if(fluid != null)
+				string.append("\t\t\t<fluidStack>").append(escapeXml(fluid)).append("</fluidStack>\n");
 		}
-		string += "\t\t</input>\n\t\t<output>\n";
+		string.append("\t\t</input>\n\t\t<output>\n");
 
 		for(ItemStack stack : recipe.getOutput()) {
-			string += "\t\t\t<itemStack>" + stack.getItem().delegate.name() + (stack.stackSize > 1 ? (";" + stack.stackSize) : (stack.getItemDamage() > 0 ? ";1" : "") ) + (stack.getItemDamage() > 0 ? (";" + stack.getItemDamage()) : "") +  "</itemStack>\n";
+			if(stack != null && stack.getItem() != null && stack.stackSize > 0)
+				string.append("\t\t\t<itemStack>")
+						.append(escapeXml(writeItemStack(stack)))
+						.append("</itemStack>\n");
 		}
 
 		for(FluidStack stack : recipe.getFluidOutputs()) {
-			string += "\t\t\t<fluidStack>" + FluidRegistry.getDefaultFluidName(stack.getFluid()).split(":")[1] + ";" + stack.amount + "</fluidStack>\n";
+			String fluid = writeFluidStack(stack);
+			if(fluid != null)
+				string.append("\t\t\t<fluidStack>").append(escapeXml(fluid)).append("</fluidStack>\n");
 		}
 
-		string += "\t\t</output>\n\t</Recipe>";
+		string.append("\t\t</output>\n\t</Recipe>");
 
-		return string;
+		return string.toString();
+	}
+
+	private static ItemStack getFirstValidStack(List<ItemStack> stacks) {
+		if(stacks != null) {
+			for(ItemStack stack : stacks) {
+				if(stack != null && stack.getItem() != null && stack.stackSize > 0)
+					return stack;
+			}
+		}
+		return null;
+	}
+
+	private static String writeFluidStack(FluidStack stack) {
+		if(stack == null || stack.getFluid() == null || stack.amount <= 0)
+			return null;
+		String name = FluidRegistry.getDefaultFluidName(stack.getFluid());
+		return name == null || name.isEmpty() ? null : name + ";" + stack.amount;
+	}
+
+	private static String writeItemStack(ItemStack stack) {
+		StringBuilder value = new StringBuilder(stack.getItem().delegate.name());
+		boolean hasNbt = stack.hasTagCompound();
+		if(stack.stackSize != 1 || stack.getItemDamage() != 0 || hasNbt)
+			value.append(';').append(stack.stackSize);
+		if(stack.getItemDamage() != 0 || hasNbt)
+			value.append(';').append(stack.getItemDamage());
+		if(hasNbt)
+			value.append(';').append(stack.getTagCompound());
+		return value.toString();
+	}
+
+	private static String escapeXml(String value) {
+		return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
 	}
 }

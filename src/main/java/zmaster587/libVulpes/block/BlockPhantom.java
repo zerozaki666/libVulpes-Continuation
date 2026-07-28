@@ -37,6 +37,11 @@ public class BlockPhantom extends Block {
 		return new ArrayList<ItemStack>();
 	}
 
+	@Override
+	public boolean canBeReplacedByLeaves(IBlockAccess world, int x, int y, int z) {
+		return true;
+	}
+
 
 	@Override
 	public TileEntity createTileEntity(World world, int metadata) {
