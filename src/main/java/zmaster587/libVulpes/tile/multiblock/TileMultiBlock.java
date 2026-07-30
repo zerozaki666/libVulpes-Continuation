@@ -69,6 +69,68 @@ public class TileMultiBlock extends TileEntity {
 	}
 
 	/**
+	 * Returns the cached item input ports, refreshing loaded TileEntity-backed
+	 * entries from the world first when possible.
+	 * <p>
+	 * This is a best-effort view of the internal mutable cache. If a port's chunk
+	 * is not loaded, or no inventory is currently present at that location, the
+	 * existing cached reference is retained. Callers must treat the returned
+	 * list as read-only, must not retain it long-term, and should only use it
+	 * after validating that the multiblock is complete.
+	 *
+	 * @return the internal item input port cache
+	 */
+	public List<IInventory> getItemInPorts() {
+		if(worldObj == null)
+			return itemInPorts;
+
+		for(int i = 0; i < itemInPorts.size(); i++) {
+			IInventory inventory = itemInPorts.get(i);
+			if(inventory instanceof TileEntity) {
+				TileEntity tile = (TileEntity)inventory;
+				if(worldObj.blockExists(tile.xCoord, tile.yCoord, tile.zCoord)) {
+					TileEntity refreshedTile = worldObj.getTileEntity(tile.xCoord, tile.yCoord, tile.zCoord);
+					if(refreshedTile instanceof IInventory)
+						itemInPorts.set(i, (IInventory)refreshedTile);
+				}
+			}
+		}
+
+		return itemInPorts;
+	}
+
+	/**
+	 * Returns the cached item output ports, refreshing loaded TileEntity-backed
+	 * entries from the world first when possible.
+	 * <p>
+	 * This is a best-effort view of the internal mutable cache. If a port's chunk
+	 * is not loaded, or no inventory is currently present at that location, the
+	 * existing cached reference is retained. Callers must treat the returned
+	 * list as read-only, must not retain it long-term, and should only use it
+	 * after validating that the multiblock is complete.
+	 *
+	 * @return the internal item output port cache
+	 */
+	public List<IInventory> getItemOutPorts() {
+		if(worldObj == null)
+			return itemOutPorts;
+
+		for(int i = 0; i < itemOutPorts.size(); i++) {
+			IInventory inventory = itemOutPorts.get(i);
+			if(inventory instanceof TileEntity) {
+				TileEntity tile = (TileEntity)inventory;
+				if(worldObj.blockExists(tile.xCoord, tile.yCoord, tile.zCoord)) {
+					TileEntity refreshedTile = worldObj.getTileEntity(tile.xCoord, tile.yCoord, tile.zCoord);
+					if(refreshedTile instanceof IInventory)
+						itemOutPorts.set(i, (IInventory)refreshedTile);
+				}
+			}
+		}
+
+		return itemOutPorts;
+	}
+
+	/**
 	 * Note: it may be true on the server but not the client.  This is because the client needs to form the multiblock
 	 * so the tile has references to other blocks in its structure for gui display etc
 	 * @return true if the structure is complete

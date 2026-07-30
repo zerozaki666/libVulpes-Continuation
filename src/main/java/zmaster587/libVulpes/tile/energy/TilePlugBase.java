@@ -7,12 +7,14 @@ import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.inventory.IInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.tileentity.TileEntity;
 import zmaster587.libVulpes.api.IUniversalEnergy;
 import zmaster587.libVulpes.inventory.modules.IModularInventory;
 import zmaster587.libVulpes.inventory.modules.ModuleBase;
 import zmaster587.libVulpes.inventory.modules.ModulePower;
 import zmaster587.libVulpes.tile.IMultiblock;
 import zmaster587.libVulpes.tile.TilePointer;
+import zmaster587.libVulpes.tile.multiblock.TileMultiBlock;
 import zmaster587.libVulpes.util.UniversalBattery;
 
 public abstract class TilePlugBase extends TilePointer implements IModularInventory, IUniversalEnergy, IMultiblock, IInventory {
@@ -131,6 +133,15 @@ public abstract class TilePlugBase extends TilePointer implements IModularInvent
 	@Override
 	public boolean canInteractWithContainer(EntityPlayer entity) {
 		return true;
+	}
+
+	@Override
+	public void onChunkUnload() {
+		TileEntity tile = worldObj != null && !worldObj.isRemote
+				? getFinalPointedTile() : null;
+		super.onChunkUnload();
+		if(tile instanceof TileMultiBlock)
+			((TileMultiBlock)tile).invalidateComponent(this);
 	}
 
 	@Override
